@@ -115,20 +115,60 @@ const MIN_LINK_LENGTH: f32 = 0.05;
 ///   frame, and at least [`MIN_ROTATED_BONES`] bones were turned from
 ///   identity by more than [`ROTATED_ANGLE`] in some frame. World offsets
 ///   never show a turn; several bones keep one odd bone from deciding.
-/// * Otherwise the window decides nothing and the next one starts.
+/// * Otherwise the window decides nothing ([`Classifier::take_undecided`]
+///   says what it saw) and the next one starts.
 ///
 /// A decision is final.
 pub struct Classifier {
     parents: Vec<Option<usize>>,
     semantics: Semantics,
+    /// Windows completed.
+    windows: u32,
     frames: u32,
     all_world: bool,
-    all_valid: bool,
+    /// Bones that gave no valid frame in some frame of the window.
+    invalid: Vec<bool>,
     rotated: Vec<bool>,
     pose_changed: bool,
     /// Direction from its parent of each tested bone, from the first frame of
     /// the window where it was long enough.
     first_links: Vec<Option<Vec3>>,
+    undecided: Option<Undecided>,
+}
+
+/// What a window that decided nothing saw: the first run in the game needs
+/// to tell a still player from a bone the native gives no frame for.
+#[derive(Debug, PartialEq)]
+pub struct Undecided {
+    /// The window's number, from 1.
+    pub window: u32,
+    /// Every offset was the requested one.
+    pub world_axes: bool,
+    pub pose_changed: bool,
+    /// Bones turned from identity in some frame.
+    pub rotated: usize,
+    /// Bones that gave no valid frame in some frame.
+    pub invalid: Vec<usize>,
+}
+
+impl Undecided {
+    /// One line for the log, with bone names from `bones`.
+    pub fn describe(&self, bones: &[BodyBone]) -> String {
+        let invalid = if self.invalid.is_empty() {
+            "every bone frame valid".to_owned()
+        } else {
+            let names: Vec<&str> = self.invalid.iter().map(|&bone| bones[bone].name).collect();
+            format!("no valid frame from {}", names.join(" "))
+        };
+        format!(
+            "window {} of {WINDOW_FRAMES} frames: offsets {} the requested ones, pose {}, {} bones turned \
+             ({MIN_ROTATED_BONES} needed), {invalid}",
+            self.window,
+            if self.world_axes { "always" } else { "not always" },
+            if self.pose_changed { "changed" } else { "still" },
+            self.rotated,
+        )
+    }
 }
 
 impl Classifier {
@@ -136,12 +176,14 @@ impl Classifier {
         let mut classifier = Self {
             parents: parents.to_vec(),
             semantics: Semantics::Unknown,
+            windows: 0,
             frames: 0,
             all_world: true,
-            all_valid: true,
+            invalid: Vec::new(),
             rotated: Vec::new(),
             pose_changed: false,
             first_links: Vec::new(),
+            undecided: None,
         };
         classifier.start_window();
         classifier
@@ -151,7 +193,7 @@ impl Classifier {
         let bones = self.parents.len();
         self.frames = 0;
         self.all_world = true;
-        self.all_valid = true;
+        self.invalid = vec![false; bones];
         self.rotated = vec![false; bones];
         self.pose_changed = false;
         self.first_links = vec![None; bones];
@@ -171,7 +213,7 @@ impl Classifier {
             }
             match sample.rotation() {
                 Some(rotation) => self.rotated[bone] |= rotation.angle_between(Quat::IDENTITY) > ROTATED_ANGLE,
-                None => self.all_valid = false,
+                None => self.invalid[bone] = true,
             }
             let Some(parent) = self.parents[bone].filter(|&parent| self.parents[parent].is_some()) else {
                 continue;
@@ -188,15 +230,30 @@ impl Classifier {
         }
         self.frames += 1;
         if self.frames == WINDOW_FRAMES {
+            self.windows += 1;
             let rotated = self.rotated.iter().filter(|&&rotated| rotated).count();
+            let invalid: Vec<usize> = (0..self.invalid.len()).filter(|&bone| self.invalid[bone]).collect();
             if self.all_world && self.pose_changed {
                 self.semantics = Semantics::World;
-            } else if self.all_valid && rotated >= MIN_ROTATED_BONES {
+            } else if invalid.is_empty() && rotated >= MIN_ROTATED_BONES {
                 self.semantics = Semantics::BoneLocal;
+            } else {
+                self.undecided = Some(Undecided {
+                    window: self.windows,
+                    world_axes: self.all_world,
+                    pose_changed: self.pose_changed,
+                    rotated,
+                    invalid,
+                });
             }
             self.start_window();
         }
         self.semantics
+    }
+
+    /// The last window that decided nothing, once.
+    pub fn take_undecided(&mut self) -> Option<Undecided> {
+        self.undecided.take()
     }
 }
 
@@ -414,6 +471,7 @@ mod tests {
         );
         assert!(all_unknown(&verdicts[..WINDOW_FRAMES as usize - 1]));
         assert_eq!(verdicts.last(), Some(&Semantics::BoneLocal));
+        assert_eq!(classifier.take_undecided(), None, "the window decided");
         // Final: whole windows of world-like frames later do not change it.
         let verdicts = classify(
             &mut classifier,
@@ -446,6 +504,13 @@ mod tests {
         let mut classifier = Classifier::new(&parents());
         let verdicts = classify(&mut classifier, (0..10 * WINDOW_FRAMES).map(|_| still.clone()));
         assert!(all_unknown(&verdicts));
+        let undecided = classifier.take_undecided().unwrap();
+        assert_eq!(
+            undecided.describe(&BODY_BONES),
+            "window 10 of 30 frames: offsets always the requested ones, pose still, 0 bones turned (4 needed), \
+             every bone frame valid"
+        );
+        assert_eq!(classifier.take_undecided(), None, "taken once");
 
         // Once the ped turns, bone-local offsets show it...
         let turning = |t: u32| turned(&axis_aligned(), Vec3::Z, 0.02 * t as f32);
@@ -567,6 +632,22 @@ mod tests {
             samples
         });
         assert!(all_unknown(&classify(&mut classifier, frames)));
+        let undecided = classifier.take_undecided().unwrap();
+        assert_eq!(
+            (
+                undecided.window,
+                undecided.world_axes,
+                undecided.pose_changed,
+                &undecided.invalid
+            ),
+            (5, false, true, &vec![head])
+        );
+        assert!(undecided.rotated >= MIN_ROTATED_BONES);
+        assert!(
+            undecided
+                .describe(&BODY_BONES)
+                .ends_with(" bones turned (4 needed), no valid frame from HEAD")
+        );
 
         // A window with a non-finite frame decides nothing either; the next one does.
         let mut classifier = Classifier::new(&parents());

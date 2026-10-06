@@ -33,6 +33,9 @@ pub struct Setup {
 const INFINITE: u32 = u32::MAX;
 /// Commands carried out per frame, which bounds their native calls.
 const COMMANDS_PER_FRAME: usize = 16;
+/// Classifier windows that decided nothing are logged: the first, then every
+/// tenth, about every 5 s at 60 frames/s.
+const UNDECIDED_LOG_EVERY: u32 = 10;
 
 // Neither the SDK nor anything else documents what these parameters mean in
 // Max Payne 3. The values are guesses that do the least, after what the same
@@ -157,6 +160,14 @@ impl State {
 
         frames::sample_ped(natives, player, &BODY_BONES, &mut self.samples);
         let semantics = self.classifier.observe(&self.samples);
+        if let Some(undecided) = self.classifier.take_undecided()
+            && undecided.window % UNDECIDED_LOG_EVERY == 1
+        {
+            log!(
+                "GET_PED_BONE_COORDS offsets undecided so far; {}",
+                undecided.describe(&BODY_BONES)
+            );
+        }
         frames::fill_actor_pose(&mut self.poses[0], PLAYER_ACTOR, &self.samples, semantics);
         if semantics != self.semantics {
             self.semantics = semantics;
