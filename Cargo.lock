@@ -203,7 +203,10 @@ name = "mp3bridge"
 version = "0.1.0"
 dependencies = [
  "bridge",
+ "glamx",
  "peimage",
+ "pose",
+ "scripthook",
  "winmod",
 ]
 
