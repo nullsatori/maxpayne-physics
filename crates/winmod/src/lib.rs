@@ -3,16 +3,20 @@
 
 use std::ffi::{OsString, c_void};
 use std::fmt;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use windows_sys::Win32::Foundation::{CloseHandle, MAX_PATH};
-use windows_sys::Win32::System::LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW};
+use windows_sys::Win32::System::LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW, GetModuleHandleW};
+use windows_sys::Win32::System::Memory::{
+    MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY,
+    PAGE_GUARD, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, VirtualQuery,
+};
 use windows_sys::Win32::System::ProcessStatus::EnumProcessModules;
 use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows_sys::Win32::System::Threading::{CreateThread, GetCurrentProcess, GetCurrentProcessId};
@@ -78,20 +82,10 @@ pub unsafe fn on_attach(module: HMODULE, reason: u32, init: fn(Module)) -> i32 {
     1
 }
 
-static PANIC_LOG: OnceLock<PathBuf> = OnceLock::new();
-
 unsafe extern "system" fn thread_main(param: *mut c_void) -> u32 {
     // SAFETY: `param` is the Box leaked in on_attach, consumed exactly once.
     let start = unsafe { Box::from_raw(param as *mut Start) };
-    let log_path = log_path(start.module);
-    let _ = PANIC_LOG.set(log_path);
-    std::panic::set_hook(Box::new(|info| {
-        if let Some(path) = PANIC_LOG.get()
-            && let Ok(mut file) = OpenOptions::new().append(true).create(true).open(path)
-        {
-            let _ = writeln!(file, "PANIC: {info}");
-        }
-    }));
+    std::panic::set_hook(Box::new(|info| write_log(format_args!("PANIC: {info}"))));
     // A panic must not unwind into the game; the hook above records it.
     match std::panic::catch_unwind(|| (start.init)(start.module)) {
         Ok(()) => 0,
@@ -104,31 +98,38 @@ pub fn log_path(module: Module) -> PathBuf {
     module_path(module).with_extension("log")
 }
 
-/// Line log with seconds since creation; flushes every line so it survives crashes.
-pub struct Log {
-    file: Option<File>,
+struct Log {
+    file: File,
     start: Instant,
 }
 
-impl Log {
-    pub fn create(path: &Path) -> Self {
-        Self {
-            file: File::create(path).ok(),
-            start: Instant::now(),
-        }
-    }
+static LOG: Mutex<Option<Log>> = Mutex::new(None);
 
-    pub fn line(&mut self, args: fmt::Arguments) {
-        if let Some(file) = &mut self.file {
-            let _ = writeln!(file, "[{:9.3}] {args}", self.start.elapsed().as_secs_f64());
-            let _ = file.flush();
-        }
+/// Opens the process-wide log; later calls replace it.
+pub fn init_log(path: &Path) {
+    let file = File::create(path).ok();
+    if let Ok(mut log) = LOG.lock() {
+        *log = file.map(|file| Log {
+            file,
+            start: Instant::now(),
+        });
+    }
+}
+
+/// Writes one line with seconds since `init_log`; flushed so it survives a crash.
+/// Safe to call from game threads; does nothing before `init_log`.
+pub fn write_log(args: fmt::Arguments) {
+    if let Ok(mut guard) = LOG.lock()
+        && let Some(log) = guard.as_mut()
+    {
+        let _ = writeln!(log.file, "[{:9.3}] {args}", log.start.elapsed().as_secs_f64());
+        let _ = log.file.flush();
     }
 }
 
 #[macro_export]
 macro_rules! log {
-    ($log:expr, $($arg:tt)*) => { $log.line(format_args!($($arg)*)) };
+    ($($arg:tt)*) => { $crate::write_log(format_args!($($arg)*)) };
 }
 
 /// Full path of a loaded module.
@@ -160,6 +161,33 @@ pub fn loaded_modules() -> Vec<(Module, PathBuf)> {
         .into_iter()
         .map(|m| (Module(m), module_path(Module(m))))
         .collect()
+}
+
+/// Handle of a module already loaded in this process; `None` for the executable.
+pub fn module_handle(name: Option<&str>) -> Option<Module> {
+    let wide: Option<Vec<u16>> = name.map(|n| n.encode_utf16().chain(Some(0)).collect());
+    let ptr = wide.as_ref().map_or(null(), |w| w.as_ptr());
+    // SAFETY: ptr is null or a NUL-terminated UTF-16 string.
+    let handle = unsafe { GetModuleHandleW(ptr) };
+    (!handle.is_null()).then_some(Module(handle))
+}
+
+/// Whether `len` bytes at `addr` are committed, readable memory right now.
+pub fn readable(addr: usize, len: usize) -> bool {
+    let mut info: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: VirtualQuery accepts any address and fills `info`.
+    let filled = unsafe { VirtualQuery(addr as *const c_void, &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) };
+    if filled == 0 || info.State != MEM_COMMIT || info.Protect & (PAGE_GUARD | PAGE_NOACCESS) != 0 {
+        return false;
+    }
+    let readable_flags = PAGE_READONLY
+        | PAGE_READWRITE
+        | PAGE_WRITECOPY
+        | PAGE_EXECUTE_READ
+        | PAGE_EXECUTE_READWRITE
+        | PAGE_EXECUTE_WRITECOPY;
+    let region_end = info.BaseAddress as usize + info.RegionSize;
+    info.Protect & readable_flags != 0 && addr.checked_add(len).is_some_and(|end| end <= region_end)
 }
 
 pub fn current_pid() -> u32 {
