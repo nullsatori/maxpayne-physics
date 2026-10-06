@@ -210,6 +210,24 @@ mod tests {
     }
 
     #[test]
+    fn float_noise_is_tolerated_but_stretch_is_not() {
+        let mut rng = Rng::new(25);
+        for layout in Layout::ALL {
+            let pose = rng.pose(5.0);
+            // Stretching one axis by 1 + e moves M^T M / s^2 about 4e/3 from identity.
+            let stretched = |e: f32| {
+                let mut m = encode(&pose, layout);
+                for row in 0..3 {
+                    m[layout.index(row, 1)] *= 1.0 + e;
+                }
+                m
+            };
+            assert!(decode(&stretched(1.0e-4), layout).is_some(), "{layout:?}");
+            assert_eq!(decode(&stretched(3.0e-3), layout), None, "{layout:?}");
+        }
+    }
+
+    #[test]
     fn transpose_flag_is_not_observable_in_one_matrix() {
         let mut rng = Rng::new(22);
         for layout in Layout::ALL {
@@ -233,7 +251,7 @@ mod tests {
             let [best, other] = classify(&samples);
             assert_eq!(best.shape, layout.shape, "{layout:?}");
             assert_eq!(best.rigid, samples.len());
-            assert!(other.rigid <= 10, "{layout:?}: {other:?}");
+            assert_eq!(other.rigid, 0, "{layout:?}");
         }
     }
 

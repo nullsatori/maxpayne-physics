@@ -309,11 +309,16 @@ mod tests {
     #[test]
     fn scaled_target_keeps_its_bone_lengths() {
         let source = humanoid();
+        // Bones scale differently, so the target is not merely the source at
+        // another size and only forward kinematics keeps its lengths. The
+        // pelvis factor sets the root scale.
+        let factor = |index: usize| 0.5 + 0.25 * (index % 3) as f32;
         let bones = source
             .bones()
             .iter()
-            .map(|bone| Bone {
-                rest: Pose3::from_parts(bone.rest.translation * 0.5, bone.rest.rotation),
+            .enumerate()
+            .map(|(index, bone)| Bone {
+                rest: Pose3::from_parts(bone.rest.translation * factor(index), bone.rest.rotation),
                 ..bone.clone()
             })
             .collect();
@@ -337,9 +342,14 @@ mod tests {
                     assert!((length - bone.rest.translation.length()).abs() < 1.0e-5, "bone {i}");
                 }
             }
-            // Same shape at half size, root included.
-            let half: Vec<Vec3> = positions(&pose).iter().map(|p| *p * 0.5).collect();
-            assert_points_eq(&positions(&result), &half, 1.0e-5);
+            assert!(result[0].translation.abs_diff_eq(pose[0].translation * 0.5, 1.0e-5));
+            // Each bone points from its parent the way the source bone does.
+            for (i, bone) in target.bones().iter().enumerate().skip(1) {
+                let parent = bone.parent.unwrap();
+                let offset = result[i].translation - result[parent].translation;
+                let expected = (pose[i].translation - pose[parent].translation) * factor(i);
+                assert!(offset.abs_diff_eq(expected, 1.0e-5), "bone {i}");
+            }
         }
     }
 
@@ -370,18 +380,26 @@ mod tests {
     #[test]
     fn unmapped_bones_follow_their_parents() {
         let source = humanoid();
-        // The target has an extra unmapped root above the pelvis.
+        // The spine has mapped children; the others are leaves.
+        let unmapped = ["spine", "head", "l_forearm", "r_shin"];
+        // The target has an extra unmapped root above the pelvis, and its
+        // unmapped leaves are turned at rest so that their rest rotations matter.
         let mut bones = vec![Bone {
             name: "root".to_owned(),
             parent: None,
             rest: Pose3::from_translation(Vec3::new(0.0, 0.0, 0.3)),
         }];
-        bones.extend(source.bones().iter().map(|bone| Bone {
-            parent: Some(bone.parent.map_or(0, |parent| parent + 1)),
-            ..bone.clone()
+        bones.extend(source.bones().iter().map(|bone| {
+            let mut bone = Bone {
+                parent: Some(bone.parent.map_or(0, |parent| parent + 1)),
+                ..bone.clone()
+            };
+            if bone.name != "spine" && unmapped.contains(&bone.name.as_str()) {
+                bone.rest.rotation = Quat::from_rotation_x(0.5) * bone.rest.rotation;
+            }
+            bone
         }));
         let target = Skeleton::new(bones).unwrap();
-        let unmapped = ["head", "l_forearm", "r_shin"];
         let mut mapping = same_names(&source);
         mapping.pairs.retain(|(name, _)| !unmapped.contains(&name.as_str()));
         let retargeter = Retargeter::new(
@@ -396,19 +414,19 @@ mod tests {
         let pose = rng.skeleton_pose(&source);
         let result = retargeter.apply(&pose);
         assert_eq!(result[0], target.bones()[0].rest, "unmapped root stays at rest");
-        // The pelvis is a root: placed from the source, not from "root".
+        // The pelvis is the only root: placed from the source, not from "root".
         assert!(result[1].translation.abs_diff_eq(pose[0].translation, 1.0e-6));
-        for name in unmapped {
-            let index = target.index_of(name).unwrap();
-            let bone = &target.bones()[index];
-            let expected = result[bone.parent.unwrap()] * bone.rest;
-            assert_poses_eq(&result[index..=index], &[expected], 1.0e-6);
-        }
-        // Mapped bones still match the source.
-        for (s, bone) in source.bones().iter().enumerate() {
-            if !unmapped.contains(&bone.name.as_str()) {
-                assert_poses_eq(&result[s + 1..=s + 1], &pose[s..=s], 1.0e-5);
-            }
+        for (index, bone) in target.bones().iter().enumerate().skip(2) {
+            let parent = result[bone.parent.unwrap()];
+            let expected = if unmapped.contains(&bone.name.as_str()) {
+                parent * bone.rest
+            } else {
+                // Turned like the source bone (the rest offsets are identity)
+                // but placed from its parent, also below the unmapped spine.
+                let s = source.index_of(&bone.name).unwrap();
+                Pose3::from_parts(parent.transform_point(bone.rest.translation), pose[s].rotation)
+            };
+            assert_poses_eq(&result[index..=index], &[expected], 1.0e-5);
         }
     }
 
