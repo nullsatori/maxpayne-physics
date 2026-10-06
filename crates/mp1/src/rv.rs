@@ -47,8 +47,8 @@ pub fn read_words(arg: usize, read: &impl Fn(usize, &mut [u8]) -> bool) -> Optio
         return None;
     }
     let mut words = [0u32; 4];
-    for (word, chunk) in words.iter_mut().zip(bytes.chunks_exact(4)) {
-        *word = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for (word, chunk) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+        *word = u32::from_le_bytes(*chunk);
     }
     Some(words)
 }
@@ -91,8 +91,8 @@ fn read_matrix(addr: u32, read: &impl Fn(usize, &mut [u8]) -> bool) -> Option<[f
         return None;
     }
     let mut matrix = [0f32; MATRIX_FLOATS];
-    for (value, chunk) in matrix.iter_mut().zip(bytes.chunks_exact(4)) {
-        *value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for (value, chunk) in matrix.iter_mut().zip(bytes.as_chunks::<4>().0) {
+        *value = f32::from_le_bytes(*chunk);
     }
     Some(matrix)
 }
