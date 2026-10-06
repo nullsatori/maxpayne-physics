@@ -194,6 +194,7 @@ name = "mp1phys"
 version = "0.1.0"
 dependencies = [
  "bridge",
+ "peimage",
  "winmod",
 ]
 
@@ -202,6 +203,7 @@ name = "mp3bridge"
 version = "0.1.0"
 dependencies = [
  "bridge",
+ "peimage",
  "winmod",
 ]
 

@@ -11,5 +11,7 @@ crate-type = ["cdylib"]
 [dependencies]
 bridge.workspace = true
 
-[target.'cfg(windows)'.dependencies]
+# The games are 32-bit; the plugins only exist for x86 Windows.
+[target.'cfg(all(windows, target_arch = "x86"))'.dependencies]
+peimage.workspace = true
 winmod.workspace = true
