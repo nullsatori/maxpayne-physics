@@ -1,4 +1,7 @@
-use ragdoll::{BodyDef, FIXED_DT, JointDef, MAX_TRACK_SPEED, RagdollId, RagdollWorld};
+use ragdoll::{
+    BodyDef, FIXED_DT, JointDef, MAX_STEPS_PER_ADVANCE, MAX_TRACK_ANGULAR_SPEED, MAX_TRACK_SPEED, RagdollId,
+    RagdollWorld,
+};
 use rapier3d::prelude::*;
 
 // Test humanoid in a T-pose, bones axis-aligned, feet at y = 0.
@@ -635,6 +638,73 @@ fn far_target_is_reached_without_overshoot() {
         let (dist, _) = tracking_error(&world, ragdoll, &target);
         assert!(dist < 0.01, "{offset:?}: {dist} m off the target after 2 s");
     }
+}
+
+#[test]
+fn drive_keeps_to_its_speed_limits() {
+    // A target 40 m away: the body cruises at the drive's top speed. Moving
+    // as one, the bodies put no load on the joints that could add speed.
+    let mut world = zero_gravity();
+    let bind = bind_pose();
+    let far = |t: f32| lifted(&bind, Vector::new(0.0, 0.0, if t > 0.0 { 40.0 } else { 0.0 }));
+    let mut top = 0.0f32;
+    track_animation(&mut world, far, 60, 1.0, 2.0, |world, ragdoll, _| {
+        for (bone, _) in world.bone_poses(ragdoll) {
+            top = top.max(world.linear_velocity(ragdoll, bone).unwrap().length());
+        }
+    });
+    assert!(
+        top > 0.99 * MAX_TRACK_SPEED && top < 1.001 * MAX_TRACK_SPEED,
+        "top speed {top} m/s"
+    );
+
+    // A lone pelvis whose target spins about the capsule axis at twice the
+    // angular limit: the body spins at the limit.
+    let mut world = zero_gravity();
+    let pelvis = &humanoid()[..1];
+    let spin = MAX_TRACK_ANGULAR_SPEED * 2.0;
+    let pose = |t: f32| {
+        let mut pose = bind.clone();
+        pose[PELVIS] = bind[PELVIS] * Pose::from_rotation(Rotation::from_rotation_y(spin * t));
+        pose
+    };
+    let ragdoll = world.spawn(pelvis, &bind, &pose(0.0), None);
+    world.track(ragdoll, &pose(0.0), 1.0);
+    let mut previous = pose(0.0)[PELVIS];
+    let mut top = 0.0f32;
+    for i in 1..=60 {
+        let t = i as f32 / 60.0;
+        world.track(ragdoll, &pose(t), 1.0);
+        world.advance(1.0 / 60.0);
+        let now = pose_of(&world, ragdoll, PELVIS);
+        top = top.max(angle(previous.rotation, now.rotation) * 60.0);
+        previous = now;
+    }
+    assert!(
+        top > 0.99 * MAX_TRACK_ANGULAR_SPEED && top < 1.001 * MAX_TRACK_ANGULAR_SPEED,
+        "top angular speed {top} rad/s"
+    );
+}
+
+#[test]
+fn zero_length_frame_keeps_tracking() {
+    // After a hitch the world owes a fixed step, which runs in the next frame
+    // even when that frame has no game time, as while paused.
+    let mut world = zero_gravity();
+    let bind = bind_pose();
+    let ragdoll = world.spawn(&humanoid(), &bind, &bind, None);
+    world.track(ragdoll, &bind, 1.0);
+    assert_eq!(world.advance(1.0), MAX_STEPS_PER_ADVANCE);
+    let target = lifted(&bind, Vector::new(0.0, 0.0, 0.1));
+    world.track(ragdoll, &target, 1.0);
+    assert_eq!(world.advance(0.0), 1, "the owed step did not run");
+    run(&mut world, 0.5);
+    for (bone, _) in world.bone_poses(ragdoll) {
+        let v = world.linear_velocity(ragdoll, bone).unwrap();
+        assert!(v.is_finite() && v.length() < 0.01, "bone {bone} moving at {v:?}");
+    }
+    let (dist, turn) = tracking_error(&world, ragdoll, &target);
+    assert!(dist < 0.001 && turn < 0.01, "off the target by {dist} m, {turn} rad");
 }
 
 #[test]
