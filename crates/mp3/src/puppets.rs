@@ -9,8 +9,9 @@ use scripthook::{BODY_BONES, Hash, Ped};
 /// Actor 0 is the player's ped; MP1 picks the ids of puppets.
 pub const PLAYER_ACTOR: u32 = 0;
 /// Most puppets at once. Sampling a ped takes 3 `GET_PED_BONE_COORDS` per
-/// body bone plus a `DOES_PED_EXIST` every frame, so with the player the cap
-/// keeps sampling to (1 + 4) * 73 = 365 native calls per frame.
+/// body bone (72) plus a `DOES_PED_EXIST` every frame; finding the player and
+/// `TIMESTEP` add 4 more for the player. The cap keeps sampling to
+/// 77 + 4 * 73 = 369 native calls per frame.
 pub const MAX_PUPPETS: usize = 4;
 /// Frames to wait for a requested model before giving the spawn up.
 pub const MODEL_TIMEOUT_FRAMES: u32 = 600;
@@ -31,10 +32,13 @@ pub fn model_for_kind(kind: u32) -> Option<Hash> {
 }
 
 /// Where the puppet in `slot` is created: along world x from the player's
-/// root, which is horizontal whether the game's up axis is y or z.
-pub fn spawn_position(player_root: [f32; 3], slot: usize) -> [f32; 3] {
+/// root, which is horizontal whether the game's up axis is y or z. `None`
+/// when the root, read from the game, is not finite: no ped is created at
+/// such a position.
+pub fn spawn_position(player_root: [f32; 3], slot: usize) -> Option<[f32; 3]> {
     let [x, y, z] = player_root;
-    [x + SPAWN_SPACING * (slot + 1) as f32, y, z]
+    let position = [x + SPAWN_SPACING * (slot + 1) as f32, y, z];
+    position.iter().all(|v| v.is_finite()).then_some(position)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -329,7 +333,11 @@ mod tests {
     fn models_and_positions() {
         assert_eq!(model_for_kind(0), Some(0x647F_FDD9));
         assert_eq!(model_for_kind(1), None);
-        assert_eq!(spawn_position([10.0, 20.0, 1.0], 0), [12.0, 20.0, 1.0]);
-        assert_eq!(spawn_position([10.0, 20.0, 1.0], 3), [18.0, 20.0, 1.0]);
+        assert_eq!(spawn_position([10.0, 20.0, 1.0], 0), Some([12.0, 20.0, 1.0]));
+        assert_eq!(spawn_position([10.0, 20.0, 1.0], 3), Some([18.0, 20.0, 1.0]));
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(spawn_position([10.0, 20.0, bad], 0), None);
+            assert_eq!(spawn_position([bad, 20.0, 1.0], 1), None);
+        }
     }
 }

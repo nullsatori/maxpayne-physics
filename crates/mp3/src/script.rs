@@ -267,7 +267,12 @@ impl State {
             if natives.has_model_loaded(model) {
                 // At the height of the player's ROOT, assumed to be the ped's
                 // origin as in other RAGE games.
-                let position = puppets::spawn_position(player_root, index);
+                let Some(position) = puppets::spawn_position(player_root, index) else {
+                    natives.set_model_as_no_longer_needed(model);
+                    *slot = None;
+                    log!("actor {actor}: the player's ROOT {player_root:?} is not finite; spawn given up");
+                    continue;
+                };
                 let ped = natives.create_ped(PED_TYPE, model, position, 0.0, false, false);
                 natives.set_model_as_no_longer_needed(model);
                 let call = format!("CREATE_PED({PED_TYPE}, {model:#010x}, {position:?}, 0, false, false) = {ped}");
