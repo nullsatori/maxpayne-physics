@@ -195,6 +195,7 @@ version = "0.1.0"
 dependencies = [
  "bridge",
  "peimage",
+ "scripthook",
  "winmod",
 ]
 
@@ -203,7 +204,10 @@ name = "mp3bridge"
 version = "0.1.0"
 dependencies = [
  "bridge",
+ "glamx",
  "peimage",
+ "pose",
+ "scripthook",
  "winmod",
 ]
 
@@ -446,6 +450,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
 dependencies = [
  "bytemuck",
+]
+
+[[package]]
+name = "scripthook"
+version = "0.1.0"
+dependencies = [
+ "peimage",
 ]
 
 [[package]]

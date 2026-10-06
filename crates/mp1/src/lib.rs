@@ -7,13 +7,16 @@
 //!
 //! Milestone 2 probes: list the executable's imports and e2mfc's exports next
 //! to the DLL, and hook `P_VirtualObject::setBoneMatrices` to learn what the
-//! engine passes for a character's bones.
+//! engine passes for a character's bones. Every few seconds the log
+//! summarizes the pose stream from Max Payne 3.
 
 // The plugin uses these on x86 Windows; elsewhere they build for host tests.
 #[cfg_attr(not(all(windows, target_arch = "x86")), allow(dead_code))]
 mod rv;
 #[cfg_attr(not(all(windows, target_arch = "x86")), allow(dead_code))]
 mod stats;
+#[cfg_attr(not(all(windows, target_arch = "x86")), allow(dead_code))]
+mod stream;
 
 #[cfg(all(windows, target_arch = "x86"))]
 mod hook;
@@ -22,10 +25,11 @@ mod hook;
 mod plugin {
     use std::time::{Duration, Instant};
 
-    use bridge::{Liveness, Mp1Side};
+    use bridge::{Liveness, Mp1Side, PoseFrame};
     use winmod::{Module, log};
 
     use crate::hook::{self, E2MFC};
+    use crate::stream::Summary;
 
     const TICK: Duration = Duration::from_millis(50);
     /// Two seconds without a peer heartbeat means the peer is gone.
@@ -65,6 +69,8 @@ mod plugin {
         let mut liveness = Liveness::new(PEER_TIMEOUT_TICKS);
         let mut connected = false;
         let mut window_start = Instant::now();
+        let mut poses = PoseFrame::new_boxed();
+        let mut next_summary = Instant::now() + STATS_PERIOD;
         loop {
             if let Some(link) = &link {
                 link.beat();
@@ -86,6 +92,16 @@ mod plugin {
                     "setBoneMatrices: {:.1} calls/s, {window}",
                     f64::from(window.calls) / seconds
                 );
+            }
+            if let Some(link) = &link
+                && Instant::now() >= next_summary
+            {
+                next_summary += STATS_PERIOD;
+                if link.read_poses(&mut poses) {
+                    log!("pose stream: {}", Summary(&poses));
+                } else {
+                    log!("pose stream: the writer kept the frame busy; not read");
+                }
             }
             std::thread::sleep(TICK);
         }

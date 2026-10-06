@@ -10,6 +10,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 bridge.workspace = true
+glamx.workspace = true
+pose.workspace = true
+scripthook.workspace = true
 
 # The games are 32-bit; the plugins only exist for x86 Windows.
 [target.'cfg(all(windows, target_arch = "x86"))'.dependencies]

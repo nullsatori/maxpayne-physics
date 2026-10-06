@@ -132,14 +132,17 @@ pub fn init_log(path: &Path) {
     }
 }
 
-/// Writes one line with seconds since `init_log`; flushed so it survives a crash.
-/// Safe to call from game threads; does nothing before `init_log`.
+/// Writes one line with seconds since `init_log`, unbuffered so it survives a
+/// crash. Safe to call from game threads; does nothing before `init_log`.
 pub fn write_log(args: fmt::Arguments) {
     if let Ok(mut guard) = LOG.lock()
         && let Some(log) = guard.as_mut()
     {
-        let _ = writeln!(log.file, "[{:9.3}] {args}", log.start.elapsed().as_secs_f64());
-        let _ = log.file.flush();
+        // One write per line: formatting straight into the unbuffered File
+        // makes a system call per formatted piece, dozens for a logged
+        // command, and Max Payne 3's script logs on the game thread.
+        let line = format!("[{:9.3}] {args}\n", log.start.elapsed().as_secs_f64());
+        let _ = log.file.write_all(line.as_bytes());
     }
 }
 

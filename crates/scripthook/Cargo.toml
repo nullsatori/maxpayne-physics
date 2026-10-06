@@ -1,0 +1,9 @@
+[package]
+name = "scripthook"
+description = "Run-time binding of Script Hook for Max Payne 3, typed natives and the ped body bone table"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+peimage.workspace = true
