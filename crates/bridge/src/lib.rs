@@ -65,8 +65,10 @@ impl ActorPose {
         pose
     }
 
+    /// The used bones. The count comes from the other process, so it is clamped
+    /// rather than trusted; readers that care about corruption check `bone_count`.
     pub fn bones(&self) -> &[BoneTransform] {
-        &self.bones[..self.bone_count as usize]
+        &self.bones[..(self.bone_count as usize).min(MAX_BONES)]
     }
 }
 
@@ -95,8 +97,9 @@ impl PoseFrame {
         unsafe { Box::from_raw(ptr) }
     }
 
+    /// The used actors, clamped like [`ActorPose::bones`].
     pub fn actors(&self) -> &[ActorPose] {
-        &self.actors[..self.actor_count as usize]
+        &self.actors[..(self.actor_count as usize).min(MAX_ACTORS)]
     }
 }
 
@@ -537,6 +540,15 @@ mod tests {
             }
             assert_eq!(mp3.receive(), None);
         }
+    }
+
+    #[test]
+    fn corrupt_counts_are_clamped() {
+        let mut frame = PoseFrame::new_boxed();
+        frame.actor_count = u32::MAX;
+        frame.actors[0].bone_count = MAX_BONES as u32 + 1;
+        assert_eq!(frame.actors().len(), MAX_ACTORS);
+        assert_eq!(frame.actors()[0].bones().len(), MAX_BONES);
     }
 
     #[test]
