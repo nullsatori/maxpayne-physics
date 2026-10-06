@@ -9,8 +9,12 @@ publish = false
 
 [workspace.dependencies]
 bridge = { path = "crates/bridge" }
+peimage = { path = "crates/peimage" }
+pose = { path = "crates/pose" }
 ragdoll = { path = "crates/ragdoll" }
+scripthook = { path = "crates/scripthook" }
 winmod = { path = "crates/winmod" }
+glamx = "0.3.1"
 rapier3d = "0.36.0"
 windows-sys = "0.61.2"
 

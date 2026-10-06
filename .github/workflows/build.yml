@@ -23,7 +23,7 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets -- -D warnings
-          cargo clippy --workspace --target i686-pc-windows-msvc -- -D warnings
+          cargo clippy --workspace --all-targets --target i686-pc-windows-msvc -- -D warnings
 
       - name: Tests
         run: cargo test --workspace
@@ -40,22 +40,19 @@ jobs:
           $exports = $json.modules.'kernel32.dll'.exports.symbols.Count
           if ($exports -lt 500) { throw "kernel32 exports: $exports" }
 
-      # Max Payne 1 is 32-bit. Max Payne 3's architecture is confirmed by
-      # recon, so its side is built for both until then.
+      # Both games are 32-bit; the plugins only exist for x86.
       - name: Build
         run: |
           cargo build --release -p mp1phys --target i686-pc-windows-msvc
           cargo build --release -p mp3bridge --target i686-pc-windows-msvc
-          cargo build --release -p mp3bridge --target x86_64-pc-windows-msvc
 
       - name: Package
         shell: pwsh
         run: |
-          $out = New-Item -ItemType Directory -Path dist
-          New-Item -ItemType Directory -Path dist\max-payne-1, dist\max-payne-3-x86, dist\max-payne-3-x64 | Out-Null
-          Copy-Item target\i686-pc-windows-msvc\release\mp1phys.dll dist\max-payne-1\mp1phys.asi
-          Copy-Item target\i686-pc-windows-msvc\release\mp3bridge.dll dist\max-payne-3-x86\mp3bridge.asi
-          Copy-Item target\x86_64-pc-windows-msvc\release\mp3bridge.dll dist\max-payne-3-x64\mp3bridge.asi
+          # Paths mirror the game folders: MP1's ASI loader reads "scripts".
+          New-Item -ItemType Directory -Path dist\max-payne-1\scripts, dist\max-payne-3 | Out-Null
+          Copy-Item target\i686-pc-windows-msvc\release\mp1phys.dll dist\max-payne-1\scripts\mp1phys.asi
+          Copy-Item target\i686-pc-windows-msvc\release\mp3bridge.dll dist\max-payne-3\mp3bridge.asi
           Copy-Item tools\recon.py dist\
 
       - uses: actions/upload-artifact@v4

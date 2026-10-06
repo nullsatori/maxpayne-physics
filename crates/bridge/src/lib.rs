@@ -22,7 +22,8 @@ mod mapping;
 pub const MAPPING_NAME: &str = "Local\\MaxPaynePassthrough";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"MPPT");
 /// Bump on any change to the layout or meaning of shared data.
-pub const VERSION: u32 = 1;
+/// v2: [`ActorPose::flags`].
+pub const VERSION: u32 = 2;
 pub const MAX_ACTORS: usize = 32;
 pub const MAX_BONES: usize = 128;
 pub const COMMAND_CAPACITY: u32 = 256;
@@ -35,28 +36,39 @@ pub struct BoneTransform {
     pub rotation: [f32; 4],
 }
 
+/// One actor's bones. Max Payne 3 actors list their bones in the order of
+/// the MP3 body bone table (`scripthook::BODY_BONES`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ActorPose {
     pub actor: u32,
     pub bone_count: u32,
+    /// [`ActorPose::ROTATIONS_VALID`]; readers ignore bits they do not know.
+    pub flags: u32,
     pub bones: [BoneTransform; MAX_BONES],
 }
 
 impl ActorPose {
-    pub fn new(actor: u32, bones: &[BoneTransform]) -> Self {
+    /// The bone rotations were measured. Without it only the translations
+    /// are, and the rotations are identity placeholders.
+    pub const ROTATIONS_VALID: u32 = 1 << 0;
+
+    pub fn new(actor: u32, flags: u32, bones: &[BoneTransform]) -> Self {
         assert!(bones.len() <= MAX_BONES, "too many bones: {}", bones.len());
         let mut pose = Self {
             actor,
             bone_count: bones.len() as u32,
+            flags,
             bones: [BoneTransform::default(); MAX_BONES],
         };
         pose.bones[..bones.len()].copy_from_slice(bones);
         pose
     }
 
+    /// The used bones. The count comes from the other process, so it is clamped
+    /// rather than trusted; readers that care about corruption check `bone_count`.
     pub fn bones(&self) -> &[BoneTransform] {
-        &self.bones[..self.bone_count as usize]
+        &self.bones[..(self.bone_count as usize).min(MAX_BONES)]
     }
 }
 
@@ -85,8 +97,9 @@ impl PoseFrame {
         unsafe { Box::from_raw(ptr) }
     }
 
+    /// The used actors, clamped like [`ActorPose::bones`].
     pub fn actors(&self) -> &[ActorPose] {
-        &self.actors[..self.actor_count as usize]
+        &self.actors[..(self.actor_count as usize).min(MAX_ACTORS)]
     }
 }
 
@@ -101,7 +114,8 @@ pub enum Command {
     Despawn {
         actor: u32,
     },
-    /// A bullet hit, in MP3 world space after MP1-to-MP3 conversion.
+    /// A bullet hit, in MP3 world space after MP1-to-MP3 conversion. `bone`
+    /// indexes the source (MP3) body bone table, `scripthook::BODY_BONES`.
     Hit {
         actor: u32,
         bone: u32,
@@ -191,7 +205,10 @@ pub struct Shared {
 
 // Both games map the same bytes, possibly from 32- and 64-bit builds; the
 // layout must not depend on the target. Update these when VERSION changes.
-const _: () = assert!(size_of::<Shared>() == 125_256);
+const _: () = assert!(size_of::<ActorPose>() == 3_596);
+const _: () = assert!(std::mem::offset_of!(ActorPose, bones) == 12);
+const _: () = assert!(size_of::<PoseFrame>() == 115_096);
+const _: () = assert!(size_of::<Shared>() == 125_384);
 const _: () = assert!(std::mem::offset_of!(Shared, pose) == 40);
 const _: () = assert!(std::mem::offset_of!(Shared, cmd_head) == 40 + size_of::<PoseFrame>());
 
@@ -526,14 +543,23 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_counts_are_clamped() {
+        let mut frame = PoseFrame::new_boxed();
+        frame.actor_count = u32::MAX;
+        frame.actors[0].bone_count = MAX_BONES as u32 + 1;
+        assert_eq!(frame.actors().len(), MAX_ACTORS);
+        assert_eq!(frame.actors()[0].bones().len(), MAX_BONES);
+    }
+
+    #[test]
     fn poses_publish_and_read() {
         let (mp1, mp3) = in_memory_link();
         let mut frame = PoseFrame::new_boxed();
         assert!(mp1.read_poses(&mut frame));
         assert_eq!(frame.frame, 0);
         let actors = [
-            ActorPose::new(3, &[bone(1.0), bone(2.0)]),
-            ActorPose::new(9, &[bone(5.0)]),
+            ActorPose::new(3, ActorPose::ROTATIONS_VALID, &[bone(1.0), bone(2.0)]),
+            ActorPose::new(9, 0, &[bone(5.0)]),
         ];
         mp3.publish_poses(12.5, &actors);
         assert!(mp1.read_poses(&mut frame));
@@ -541,6 +567,8 @@ mod tests {
         assert_eq!(frame.game_time, 12.5);
         assert_eq!(frame.actors(), &actors);
         assert_eq!(frame.actors()[0].bones(), &[bone(1.0), bone(2.0)]);
+        assert_eq!(frame.actors()[0].flags, ActorPose::ROTATIONS_VALID);
+        assert_eq!(frame.actors()[1].flags, 0);
     }
 
     #[test]
@@ -550,7 +578,7 @@ mod tests {
             for i in 1..=2000u32 {
                 let v = i as f32;
                 let bones = vec![bone(v); MAX_BONES];
-                mp3.publish_poses(v as f64, &[ActorPose::new(i, &bones), ActorPose::new(i, &bones)]);
+                mp3.publish_poses(v as f64, &[ActorPose::new(i, i, &bones), ActorPose::new(i, i, &bones)]);
             }
         });
         let mut frame = PoseFrame::new_boxed();
@@ -561,7 +589,7 @@ mod tests {
             }
             let v = frame.game_time as f32;
             for actor in frame.actors() {
-                assert_eq!(actor.actor, v as u32);
+                assert_eq!((actor.actor, actor.flags), (v as u32, v as u32));
                 assert!(actor.bones().iter().all(|b| *b == bone(v)), "torn frame at {v}");
             }
             seen += 1;
