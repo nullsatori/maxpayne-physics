@@ -449,6 +449,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "scripthook"
+version = "0.1.0"
+dependencies = [
+ "peimage",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
