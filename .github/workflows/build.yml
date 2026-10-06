@@ -1,0 +1,64 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup target add i686-pc-windows-msvc x86_64-pc-windows-msvc
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy --workspace --target i686-pc-windows-msvc -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Recon smoke test
+        shell: pwsh
+        run: |
+          $game = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\fakegame"
+          Copy-Item C:\Windows\SysWOW64\notepad.exe, C:\Windows\SysWOW64\kernel32.dll $game
+          python tools/recon.py $game --out "$env:RUNNER_TEMP\recon"
+          $md = Get-Content "$env:RUNNER_TEMP\recon\recon.md" -Raw
+          if ($md -notmatch 'kernel32.dll \| i386') { Write-Output $md; throw "kernel32 not parsed as i386" }
+          $json = Get-Content "$env:RUNNER_TEMP\recon\recon.json" -Raw | ConvertFrom-Json
+          $exports = $json.modules.'kernel32.dll'.exports.symbols.Count
+          if ($exports -lt 500) { throw "kernel32 exports: $exports" }
+
+      # Max Payne 1 is 32-bit. Max Payne 3's architecture is confirmed by
+      # recon, so its side is built for both until then.
+      - name: Build
+        run: |
+          cargo build --release -p mp1phys --target i686-pc-windows-msvc
+          cargo build --release -p mp3bridge --target i686-pc-windows-msvc
+          cargo build --release -p mp3bridge --target x86_64-pc-windows-msvc
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = New-Item -ItemType Directory -Path dist
+          New-Item -ItemType Directory -Path dist\max-payne-1, dist\max-payne-3-x86, dist\max-payne-3-x64 | Out-Null
+          Copy-Item target\i686-pc-windows-msvc\release\mp1phys.dll dist\max-payne-1\mp1phys.asi
+          Copy-Item target\i686-pc-windows-msvc\release\mp3bridge.dll dist\max-payne-3-x86\mp3bridge.asi
+          Copy-Item target\x86_64-pc-windows-msvc\release\mp3bridge.dll dist\max-payne-3-x64\mp3bridge.asi
+          Copy-Item tools\recon.py dist\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maxpayne-passthrough
+          path: dist

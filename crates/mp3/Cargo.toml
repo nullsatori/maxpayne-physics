@@ -1,0 +1,15 @@
+[package]
+name = "mp3bridge"
+description = "Injected into Max Payne 3: drives puppets, streams their poses"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bridge.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winmod.workspace = true

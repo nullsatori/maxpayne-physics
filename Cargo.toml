@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+bridge = { path = "crates/bridge" }
+ragdoll = { path = "crates/ragdoll" }
+winmod = { path = "crates/winmod" }
+rapier3d = "0.36.0"
+windows-sys = "0.61.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[profile.dev]
+# Physics in debug builds is too slow for multi-second simulations in tests.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
