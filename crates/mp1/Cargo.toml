@@ -1,0 +1,15 @@
+[package]
+name = "mp1phys"
+description = "Injected into Max Payne 1: sends game events, applies streamed poses"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bridge.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+winmod.workspace = true

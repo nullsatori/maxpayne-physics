@@ -1,0 +1,9 @@
+[package]
+name = "bridge"
+description = "Shared-memory protocol between the Max Payne 1 and Max Payne 3 processes"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory"] }

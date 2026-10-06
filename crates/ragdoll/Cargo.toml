@@ -1,0 +1,9 @@
+[package]
+name = "ragdoll"
+description = "Game-independent ragdoll simulation on Rapier"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rapier3d.workspace = true
