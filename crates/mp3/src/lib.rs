@@ -129,14 +129,17 @@ mod plugin {
             api,
             pid: winmod::current_pid(),
             skeleton_path: winmod::side_path(module, "player-skeleton.txt"),
+            registrar: std::thread::current().id(),
         };
         if SETUP.set(setup).is_err() {
             log!("script set up twice; not registering again");
             return false;
         }
         log!(
-            "calling scriptRegister from the plugin thread; the SDK sample registers in DllMain, so registering \
-             later from another thread is unverified: without a 'script running' line below, it did not work"
+            "calling scriptRegister from the plugin thread ({:?}); the SDK sample registers in DllMain, so \
+             registering later from another thread is unverified: without a 'script running' line below, it did \
+             not work",
+            std::thread::current().id()
         );
         // SAFETY: the module is this DLL, loaded for the life of the game;
         // script::entry catches its panics.

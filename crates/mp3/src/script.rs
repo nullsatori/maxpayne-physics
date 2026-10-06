@@ -5,6 +5,7 @@
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::thread::ThreadId;
 
 use bridge::{ActorPose, Command, Mp3Side};
 use scripthook::{Api, BODY_BONES, Natives, Ped, Script, body_bone_index};
@@ -24,6 +25,8 @@ pub struct Setup {
     pub api: Api,
     pub pid: u32,
     pub skeleton_path: PathBuf,
+    /// The plugin thread, which calls `scriptRegister`.
+    pub registrar: ThreadId,
 }
 
 /// `scriptWait(INFINITE)` is how the SDK's `TERMINATE()` ends a script.
@@ -56,9 +59,17 @@ pub extern "C" fn entry() {
         log!("script started before the plugin set it up; ending it");
         return;
     };
-    log!("script running on thread {:?}", std::thread::current().id());
+    let thread = std::thread::current().id();
+    // Registering from the plugin thread is unverified; if Script Hook ran the
+    // script right inside scriptRegister, this is not the game's script fiber
+    // and no native may be called.
+    if thread == setup.registrar {
+        log!("script started on the plugin thread inside scriptRegister, not on the game's script fiber; ending it");
+        return;
+    }
+    log!("script running on thread {thread:?}");
     // SAFETY: Script Hook calls this on the fiber of the script registered
-    // with setup.api.
+    // with setup.api, and not on the thread that registered it.
     let script = unsafe { setup.api.script() };
     // A panic must not unwind into Script Hook; winmod's panic hook logs it.
     let _ = std::panic::catch_unwind(AssertUnwindSafe(|| run(setup, script)));

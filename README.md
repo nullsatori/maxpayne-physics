@@ -132,9 +132,12 @@ cargo build --release -p mp3bridge --target i686-pc-windows-msvc
    of ScriptHook.dll` — функции найдены, их сигнатуры совпали с SDK. Если
    вместо этого `ScriptHook.dll: no export ...` — у этого Script Hook другие
    функции, скрипт не регистрируется; нужен файл экспортов.
-3. `calling scriptRegister from the plugin thread; ...`, `scriptRegister
-   returned`, затем `script running on thread ...` — Script Hook запустил
-   скрипт. Нет последней строки — регистрация не сработала.
+3. `calling scriptRegister from the plugin thread (ThreadId(N)); ...`,
+   `scriptRegister returned`, затем `script running on thread ThreadId(M)` с
+   другим номером — Script Hook запустил скрипт в потоке игры. Нет последней
+   строки — регистрация не сработала. `script started on the plugin thread
+   inside scriptRegister ...` — Script Hook запустил скрипт прямо в потоке
+   плагина; скрипт завершается, не вызвав ни одного натива.
 4. `the script beats the heartbeat from now on, once per game frame` — дальше
    heartbeat бьётся раз в кадр игры, и пауза игры для MP1 выглядит как
    отключение.
