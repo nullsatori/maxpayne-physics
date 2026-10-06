@@ -76,15 +76,26 @@ mod tests {
     }
 
     #[test]
-    fn limbs_hang_from_their_own_side() {
-        for bone in &BODY_BONES[1..] {
-            let parent = BODY_BONES[bone.parent.unwrap()].name;
-            for side in ["L_", "R_"] {
-                if bone.name.starts_with(side) && !bone.name.ends_with("CLAVICLE") && !bone.name.ends_with("THIGH") {
-                    assert!(parent.starts_with(side), "{} hangs from {parent}", bone.name);
-                }
+    fn hierarchy_is_the_documented_one() {
+        // Each chain is a bone, then its child, grandchild and so on: the
+        // spine up to the head, the arms from SPINE3, the legs from PELVIS.
+        let chains = [
+            "ROOT PELVIS SPINE SPINE1 SPINE2 SPINE3 NECK HEAD",
+            "SPINE3 L_CLAVICLE L_UPPERARM L_FOREARM L_HAND",
+            "SPINE3 R_CLAVICLE R_UPPERARM R_FOREARM R_HAND",
+            "PELVIS L_THIGH L_CALF L_FOOT L_TOE",
+            "PELVIS R_THIGH R_CALF R_FOOT R_TOE",
+        ];
+        let mut children = 0;
+        for chain in chains {
+            let bones: Vec<usize> = chain.split(' ').map(|name| body_bone_index(name).unwrap()).collect();
+            for pair in bones.windows(2) {
+                let (parent, child) = (pair[0], pair[1]);
+                assert_eq!(BODY_BONES[child].parent, Some(parent), "{}", BODY_BONES[child].name);
+                children += 1;
             }
         }
+        assert_eq!(children, BODY_BONES.len() - 1, "every bone but ROOT is in a chain");
         assert_eq!(body_bone_index("PELVIS"), Some(1));
         assert_eq!(body_bone_index("R_TOE"), Some(BODY_BONES.len() - 1));
         assert_eq!(body_bone_index("TAIL"), None);

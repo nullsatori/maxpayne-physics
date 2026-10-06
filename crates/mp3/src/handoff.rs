@@ -57,6 +57,7 @@ impl Handoff {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
 
     use super::*;
 
@@ -78,9 +79,15 @@ mod tests {
     fn never_two_beaters_at_once() {
         let handoff = Handoff::new();
         let beating = AtomicBool::new(false);
+        let overlaps = AtomicU32::new(0);
         let script_beats = AtomicU32::new(0);
+        // A broken handoff fails the test rather than hanging it.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let running = || script_beats.load(Ordering::SeqCst) < 1000 && Instant::now() < deadline;
         let beat = || {
-            assert!(!beating.swap(true, Ordering::SeqCst), "two beaters at once");
+            if beating.swap(true, Ordering::SeqCst) {
+                overlaps.fetch_add(1, Ordering::SeqCst);
+            }
             for _ in 0..50 {
                 std::hint::spin_loop();
             }
@@ -88,14 +95,14 @@ mod tests {
         };
         std::thread::scope(|scope| {
             scope.spawn(|| {
-                while script_beats.load(Ordering::SeqCst) < 1000 {
+                while running() {
                     if handoff.plugin_tick() == PluginTick::Beat {
                         beat();
                     }
                 }
             });
             scope.spawn(|| {
-                while script_beats.load(Ordering::SeqCst) < 1000 {
+                while running() {
                     if handoff.script_frame() {
                         beat();
                         script_beats.fetch_add(1, Ordering::SeqCst);
@@ -103,6 +110,12 @@ mod tests {
                 }
             });
         });
+        assert_eq!(overlaps.load(Ordering::SeqCst), 0, "two beaters at once");
+        assert_eq!(
+            script_beats.load(Ordering::SeqCst),
+            1000,
+            "the script never got the heartbeat"
+        );
         assert_eq!(handoff.plugin_tick(), PluginTick::Idle);
     }
 }

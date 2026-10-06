@@ -107,6 +107,12 @@ mod tests {
              ROOT (1.000, 1.500, -1.000), PELVIS (2.000, 2.500, -2.000)"
         );
         assert_eq!(Summary(&PoseFrame::new_boxed()).to_string(), "nothing published yet");
+        // As many actors as the frame holds is not a bad count.
+        let full = frame(&[ActorPose::new(0, 0, &[bone(1.0)]); MAX_ACTORS]);
+        assert_eq!(
+            Summary(&full).to_string(),
+            "frame 42, game time 12.250 s, 32 actors; actor 0: 1 bones, flags 0x0, ROOT (1.000, 1.500, -1.000)"
+        );
         assert_eq!(
             Summary(&frame(&[])).to_string(),
             "frame 42, game time 12.250 s, 0 actors"
