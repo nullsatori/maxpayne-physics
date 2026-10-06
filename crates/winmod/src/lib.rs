@@ -9,7 +9,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{CloseHandle, MAX_PATH};
 use windows_sys::Win32::System::LibraryLoader::{DisableThreadLibraryCalls, GetModuleFileNameW, GetModuleHandleW};
@@ -95,7 +95,23 @@ unsafe extern "system" fn thread_main(param: *mut c_void) -> u32 {
 
 /// `<dll name>.log` next to the injected DLL.
 pub fn log_path(module: Module) -> PathBuf {
-    module_path(module).with_extension("log")
+    side_path(module, "log")
+}
+
+/// `<dll name>.<extension>` next to the injected DLL.
+pub fn side_path(module: Module, extension: &str) -> PathBuf {
+    module_path(module).with_extension(extension)
+}
+
+/// Writes `items`, one per line, to `<dll name>.<extension>` next to the
+/// injected DLL and logs the outcome.
+pub fn write_listing<T: fmt::Display>(module: Module, extension: &str, items: &[T]) {
+    let path = side_path(module, extension);
+    let text: String = items.iter().map(|item| format!("{item}\n")).collect();
+    match std::fs::write(&path, text) {
+        Ok(()) => write_log(format_args!("wrote {} lines to {}", items.len(), path.display())),
+        Err(err) => write_log(format_args!("cannot write {}: {err}", path.display())),
+    }
 }
 
 struct Log {
@@ -170,6 +186,20 @@ pub fn module_handle(name: Option<&str>) -> Option<Module> {
     // SAFETY: ptr is null or a NUL-terminated UTF-16 string.
     let handle = unsafe { GetModuleHandleW(ptr) };
     (!handle.is_null()).then_some(Module(handle))
+}
+
+/// Polls every 100 ms until the named module is loaded, for at most `timeout`.
+pub fn wait_for_module(name: &str, timeout: Duration) -> Option<Module> {
+    let start = Instant::now();
+    loop {
+        if let Some(module) = module_handle(Some(name)) {
+            return Some(module);
+        }
+        if start.elapsed() >= timeout {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Whether `len` bytes at `addr` are committed, readable memory right now.

@@ -5,6 +5,7 @@
 //! buffer laid out the same way) and must keep it mapped while reading.
 
 use std::ffi::CStr;
+use std::fmt;
 
 const DOS_MAGIC: u16 = 0x5A4D;
 const NT_SIGNATURE: u32 = 0x0000_4550;
@@ -20,13 +21,37 @@ pub struct Export {
     pub rva: u32,
 }
 
+/// `ordinal rva name`, one export per line in the probe listings.
+impl fmt::Display for Export {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} {:#010x} {}", self.ordinal, self.rva, self.name)
+    }
+}
+
 /// One imported function and the address of its IAT slot.
+///
+/// `name` and `ordinal` are both `None` when the DLL's descriptor has no
+/// lookup table: the IAT was the only copy of the names and the loader has
+/// overwritten it with addresses.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
     pub dll: String,
     /// `None` for imports by ordinal.
     pub name: Option<String>,
+    /// Set for imports by ordinal.
+    pub ordinal: Option<u16>,
     pub slot: usize,
+}
+
+/// `dll name`, with `#n` for imports by ordinal.
+impl fmt::Display for Import {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match (&self.name, self.ordinal) {
+            (Some(name), _) => write!(f, "{} {name}", self.dll),
+            (None, Some(ordinal)) => write!(f, "{} #{ordinal}", self.dll),
+            (None, None) => write!(f, "{} <unknown>", self.dll),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -162,19 +187,26 @@ impl Image {
                 break;
             }
             let dll = self.cstr(name);
-            // Bound or lookup-less images only have the IAT; names are then lost
-            // once the loader overwrites it, so prefer the lookup table.
-            let names_table = if lookup != 0 { lookup } else { iat } as usize;
+            // Without a lookup table the IAT holds resolved addresses, not name
+            // RVAs; it is walked only to find the slots.
+            let table = if lookup != 0 { lookup } else { iat } as usize;
             for i in 0.. {
-                let at = names_table + i * thunk_size;
+                let at = table + i * thunk_size;
                 let entry = if self.is64 { self.u64(at) } else { self.u32(at) as u64 };
                 if entry == 0 {
                     break;
                 }
-                let name = (entry & ordinal_flag == 0).then(|| self.cstr((entry & 0x7FFF_FFFF) as u32 + 2));
+                let (name, ordinal) = if lookup == 0 {
+                    (None, None)
+                } else if entry & ordinal_flag != 0 {
+                    (None, Some(entry as u16))
+                } else {
+                    (Some(self.cstr((entry & 0x7FFF_FFFF) as u32 + 2)), None)
+                };
                 result.push(Import {
                     dll: dll.clone(),
                     name,
+                    ordinal,
                     slot: self.base + iat as usize + i * thunk_size,
                 });
             }
@@ -213,7 +245,8 @@ mod tests {
 
     /// Builds a mapped PE32 image: exports `?b@C@@QAEXXZ`, `a`, one ordinal-only
     /// function and a forwarder; imports two names and one ordinal from
-    /// `e2mfc.dll` plus one name from `kernel32.dll`.
+    /// `e2mfc.dll`, one name from `kernel32.dll` and two slots from a
+    /// `winmm.dll` descriptor without a lookup table.
     struct Builder(Vec<u8>);
 
     impl Builder {
@@ -262,7 +295,7 @@ mod tests {
         b.put_str(0x11C0, "?b@C@@QAEXXZ");
         b.put_str(0x11D0, "a");
 
-        // Import descriptors: e2mfc.dll, kernel32.dll, terminator.
+        // Import descriptors: e2mfc.dll, kernel32.dll, winmm.dll, terminator.
         let i = 0x2000;
         b.put_u32(i, 0x2100); // lookup table
         b.put_u32(i + 12, 0x2300); // dll name
@@ -270,12 +303,15 @@ mod tests {
         b.put_u32(i + 20, 0x2120);
         b.put_u32(i + 32, 0x2310);
         b.put_u32(i + 36, 0x2220);
+        b.put_u32(i + 52, 0x2320);
+        b.put_u32(i + 56, 0x2240);
         b.put_u32(0x2100, 0x2400);
         b.put_u32(0x2104, 0x8000_0007);
         b.put_u32(0x2108, 0x2440);
         b.put_u32(0x2120, 0x2480);
         b.put_str(0x2300, "e2mfc.dll");
         b.put_str(0x2310, "KERNEL32.dll");
+        b.put_str(0x2320, "WINMM.dll");
         b.put_str(0x2402, "?setBoneMatrices@P_VirtualObject@@QAEXXZ");
         b.put_str(0x2442, "?getCount@P_Scene@@QBEHXZ");
         b.put_str(0x2482, "Sleep");
@@ -284,6 +320,9 @@ mod tests {
         b.put_u32(0x2204, 0x7700_0002);
         b.put_u32(0x2208, 0x7700_0003);
         b.put_u32(0x2220, 0x7600_0001);
+        // An address that happens to look like the RVA of a name entry.
+        b.put_u32(0x2240, 0x2400);
+        b.put_u32(0x2244, 0x7500_0002);
         b.0
     }
 
@@ -312,6 +351,7 @@ mod tests {
                 },
             ]
         );
+        assert_eq!(exports[2].to_string(), "8 0x00001820 ?b@C@@QAEXXZ");
     }
 
     #[test]
@@ -320,19 +360,19 @@ mod tests {
         let base = image_bytes.as_ptr() as usize;
         let image = unsafe { Image::new(base) }.unwrap();
         let imports = image.imports();
-        let names: Vec<_> = imports
-            .iter()
-            .map(|i| (i.dll.as_str(), i.name.as_deref(), i.slot - base))
-            .collect();
+        let listing: Vec<_> = imports.iter().map(|i| (i.to_string(), i.slot - base)).collect();
         assert_eq!(
-            names,
+            listing,
             vec![
-                ("e2mfc.dll", Some("?setBoneMatrices@P_VirtualObject@@QAEXXZ"), 0x2200),
-                ("e2mfc.dll", None, 0x2204),
-                ("e2mfc.dll", Some("?getCount@P_Scene@@QBEHXZ"), 0x2208),
-                ("KERNEL32.dll", Some("Sleep"), 0x2220),
+                ("e2mfc.dll ?setBoneMatrices@P_VirtualObject@@QAEXXZ".into(), 0x2200),
+                ("e2mfc.dll #7".into(), 0x2204),
+                ("e2mfc.dll ?getCount@P_Scene@@QBEHXZ".into(), 0x2208),
+                ("KERNEL32.dll Sleep".into(), 0x2220),
+                ("WINMM.dll <unknown>".into(), 0x2240),
+                ("WINMM.dll <unknown>".into(), 0x2244),
             ]
         );
+        assert_eq!((imports[1].name.as_deref(), imports[1].ordinal), (None, Some(7)));
         let slot = imports[0].slot as *const u32;
         assert_eq!(unsafe { slot.read_unaligned() }, 0x7700_0001);
     }
