@@ -491,7 +491,7 @@ fn tracking_does_not_depend_on_frame_rate() {
 
 #[test]
 fn wall_holds_back_tracked_body() {
-    // The target jumps 2.5 m behind a wall without thickness, so the drive
+    // The target jumps far behind a wall without thickness, so the drive
     // runs into the wall at its limits and keeps pushing. Standing on a floor
     // the body hits the wall early; in zero gravity it reaches top speed first.
     for (mut world, wall) in [(world_with_floor(), 1.5), (zero_gravity(), 8.0)] {
@@ -504,7 +504,8 @@ fn wall_holds_back_tracked_body() {
         world.add_static_mesh(vertices, vec![[0, 1, 2], [0, 2, 3]]).unwrap();
         let defs = humanoid();
         let bind = bind_pose();
-        let jump = |t: f32| lifted(&bind, Vector::new(0.0, 0.0, if t > 0.0 { wall + 2.5 } else { 0.0 }));
+        // Far enough that the drive does not brake for the target before the wall.
+        let jump = |t: f32| lifted(&bind, Vector::new(0.0, 0.0, if t > 0.0 { wall + 15.0 } else { 0.0 }));
         let (mut depth, mut late_depth, mut speed, mut late_speed) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
         let ragdoll = track_animation(&mut world, jump, 60, 1.0, 3.0, |world, ragdoll, t| {
             for def in &defs {
@@ -608,6 +609,32 @@ fn bullet_knocks_tracked_body_off_and_it_recovers() {
         after < 0.01 && after < before * 2.0,
         "did not recover: {after} m off, {before} m before the hit"
     );
+}
+
+#[test]
+fn far_target_is_reached_without_overshoot() {
+    // A target the body is far from, as after a heavy hit or a wall: the drive
+    // brakes in time instead of flying past it. In gravity the target drops,
+    // so gravity works against the braking.
+    let bind = bind_pose();
+    for (mut world, offset) in [
+        (zero_gravity(), Vector::new(0.0, 0.0, 2.5)),
+        (RagdollWorld::new(), Vector::new(0.0, -1.5, 0.0)),
+    ] {
+        let start = lifted(&bind, Vector::new(0.0, 3.0, 0.0));
+        let target = lifted(&start, offset);
+        let jump = |t: f32| if t > 0.0 { target.clone() } else { start.clone() };
+        let direction = offset.normalize();
+        let mut overshoot = 0.0f32;
+        let ragdoll = track_animation(&mut world, jump, 60, 1.0, 2.0, |world, ragdoll, _| {
+            for (bone, pose) in world.bone_poses(ragdoll) {
+                overshoot = overshoot.max((pose.translation - target[bone].translation).dot(direction));
+            }
+        });
+        assert!(overshoot < 0.02, "{offset:?}: overshot by {overshoot} m");
+        let (dist, _) = tracking_error(&world, ragdoll, &target);
+        assert!(dist < 0.01, "{offset:?}: {dist} m off the target after 2 s");
+    }
 }
 
 #[test]

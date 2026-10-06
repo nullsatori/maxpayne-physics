@@ -357,12 +357,18 @@ impl Ragdoll {
 /// velocity, `error` how far the body is from where the target will be at the
 /// end of the step. Returns the body's new velocity.
 fn servo(velocity: Vector, feed: Vector, error: Vector, strength: Real, max_speed: Real, max_accel: Real) -> Vector {
+    let accel = strength * max_accel;
     // The error left after the step if the body moved with the target closes
     // with time constant TRACK_TIME / strength. At full strength the body gets
     // the goal velocity within one step unless the acceleration limit holds it.
-    let goal = feed + (error - feed * FIXED_DT) * (strength / TRACK_TIME);
-    let goal = goal.clamp_length_max(max_speed);
-    velocity + ((goal - velocity) * strength).clamp_length_max(strength * max_accel * FIXED_DT)
+    let rest = error - feed * FIXED_DT;
+    // A far target is approached no faster than half the acceleration limit
+    // can brake within the remaining error. Closing at the linear rate, the
+    // body would overshoot by its braking distance, and further when gravity
+    // takes part of the limit.
+    let closing = (rest * (strength / TRACK_TIME)).clamp_length_max((accel * rest.length()).sqrt());
+    let goal = (feed + closing).clamp_length_max(max_speed);
+    velocity + ((goal - velocity) * strength).clamp_length_max(accel * FIXED_DT)
 }
 
 /// Rotation as axis times angle along the shorter arc: `q` and `-q` are the
