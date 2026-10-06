@@ -86,8 +86,9 @@ pub enum Semantics {
 pub const WINDOW_FRAMES: u32 = 30;
 /// Largest difference, per component, between a sampled offset and the
 /// requested one for the offset to count as world axes. A bone turned by more
-/// than about 0.01 rad (this / d) exceeds it; f32 rounding of positions within
-/// about 4 km of the origin stays below it.
+/// than 0.01 rad (this / d) about a world axis exceeds it, by more than
+/// 0.02 rad about any axis; f32 rounding of positions within about 4 km of
+/// the origin stays below it.
 const WORLD_TOLERANCE: f32 = 1.0e-3;
 /// A bone further than this from identity, radians, counts as rotated.
 const ROTATED_ANGLE: f32 = 0.05;
@@ -254,7 +255,7 @@ pub fn skeleton_text(bones: &[BodyBone], pose: &ActorPose, semantics: Semantics)
 
 #[cfg(test)]
 mod tests {
-    use scripthook::{BODY_BONES, Recorder};
+    use scripthook::{BODY_BONES, Recorder, body_bone_index};
 
     use super::*;
 
@@ -282,14 +283,43 @@ mod tests {
 
     /// The same skeleton standing still with every bone along the world axes.
     fn axis_aligned() -> Vec<Pose3> {
+        axis_aligned_with_links(Vec3::new(0.0, 0.2, 0.05))
+    }
+
+    fn axis_aligned_with_links(link: Vec3) -> Vec<Pose3> {
         let mut world: Vec<Pose3> = Vec::new();
         for bone in &BODY_BONES {
             world.push(match bone.parent {
-                Some(parent) => world[parent] * Pose3::from_translation(Vec3::new(0.0, 0.2, 0.05)),
+                Some(parent) => world[parent] * Pose3::from_translation(link),
                 None => Pose3::from_translation(Vec3::new(1500.0, -800.0, 30.0)),
             });
         }
         world
+    }
+
+    /// `world` turned as a whole about its root by `angle` around `axis`.
+    fn turned(world: &[Pose3], axis: Vec3, angle: f32) -> Vec<Pose3> {
+        let turn = Quat::from_axis_angle(axis, angle);
+        let root = world[0].translation;
+        world
+            .iter()
+            .map(|pose| Pose3::from_parts(root + turn * (pose.translation - root), turn * pose.rotation))
+            .collect()
+    }
+
+    /// Moves every sampled point by up to `amplitude` per axis, differently in
+    /// each frame `t`, like rounding of positions far from the origin.
+    fn jittered(mut samples: Vec<BoneSample>, t: u32, amplitude: f32) -> Vec<BoneSample> {
+        for (bone, sample) in samples.iter_mut().enumerate() {
+            for (k, point) in [&mut sample.origin, &mut sample.at_x, &mut sample.at_y]
+                .into_iter()
+                .enumerate()
+            {
+                let seed = (t * 97 + bone as u32 * 13 + k as u32 * 5) as f32;
+                *point += amplitude * Vec3::new((seed * 1.7).sin(), (seed * 2.3).sin(), (seed * 3.1).sin());
+            }
+        }
+        samples
     }
 
     fn bone_local(world: &[Pose3]) -> Vec<BoneSample> {
@@ -350,10 +380,12 @@ mod tests {
         assert!(sample(Vec3::X * 1.15, Vec3::Y).rotation().is_none(), "axis 15% long");
         assert!(sample(Vec3::X, Vec3::Y * 0.85).rotation().is_none(), "axis 15% short");
         let skewed = |angle: f32| Vec3::new(angle.sin(), angle.cos(), 0.0);
-        assert!(
-            sample(Vec3::X, skewed(0.15)).rotation().is_none(),
-            "axes 0.15 rad off square"
-        );
+        for skew in [0.15, -0.15] {
+            assert!(
+                sample(Vec3::X, skewed(skew)).rotation().is_none(),
+                "axes {skew} rad off square"
+            );
+        }
         assert!(sample(Vec3::X, Vec3::X).rotation().is_none(), "parallel axes");
         assert!(sample(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::Y).rotation().is_none());
         // Small scale and skew are tolerated; the frame is squared up.
@@ -366,22 +398,28 @@ mod tests {
         frames.map(|samples| classifier.observe(&samples)).collect()
     }
 
+    /// Rounding of positions around 2 km from the origin, in metres.
+    const NOISE: f32 = 1.0e-4;
+
+    fn all_unknown(verdicts: &[Semantics]) -> bool {
+        verdicts.iter().all(|&v| v == Semantics::Unknown)
+    }
+
     #[test]
     fn bone_local_offsets_are_recognized_after_a_window() {
         let mut classifier = Classifier::new(&parents());
         let verdicts = classify(
             &mut classifier,
-            (0..WINDOW_FRAMES).map(|t| bone_local(&animated(t, 0.01))),
+            (0..WINDOW_FRAMES).map(|t| jittered(bone_local(&animated(t, 0.01)), t, NOISE)),
         );
-        assert!(
-            verdicts[..WINDOW_FRAMES as usize - 1]
-                .iter()
-                .all(|&v| v == Semantics::Unknown)
-        );
+        assert!(all_unknown(&verdicts[..WINDOW_FRAMES as usize - 1]));
         assert_eq!(verdicts.last(), Some(&Semantics::BoneLocal));
-        // Final: later world-like frames do not change it.
-        let world = world_axes(&animated(0, 0.0));
-        assert_eq!(classifier.observe(&world), Semantics::BoneLocal);
+        // Final: whole windows of world-like frames later do not change it.
+        let verdicts = classify(
+            &mut classifier,
+            (0..2 * WINDOW_FRAMES).map(|t| world_axes(&animated(t, 0.01))),
+        );
+        assert!(verdicts.iter().all(|&v| v == Semantics::BoneLocal));
     }
 
     #[test]
@@ -389,14 +427,15 @@ mod tests {
         let mut classifier = Classifier::new(&parents());
         let verdicts = classify(
             &mut classifier,
-            (0..WINDOW_FRAMES).map(|t| world_axes(&animated(t, 0.01))),
+            (0..WINDOW_FRAMES).map(|t| jittered(world_axes(&animated(t, 0.01)), t, NOISE)),
         );
-        assert!(
-            verdicts[..WINDOW_FRAMES as usize - 1]
-                .iter()
-                .all(|&v| v == Semantics::Unknown)
-        );
+        assert!(all_unknown(&verdicts[..WINDOW_FRAMES as usize - 1]));
         assert_eq!(verdicts.last(), Some(&Semantics::World));
+        let verdicts = classify(
+            &mut classifier,
+            (0..2 * WINDOW_FRAMES).map(|t| bone_local(&animated(t, 0.01))),
+        );
+        assert!(verdicts.iter().all(|&v| v == Semantics::World));
     }
 
     #[test]
@@ -406,17 +445,10 @@ mod tests {
         assert_eq!(still, world_axes(&axis_aligned()));
         let mut classifier = Classifier::new(&parents());
         let verdicts = classify(&mut classifier, (0..10 * WINDOW_FRAMES).map(|_| still.clone()));
-        assert!(verdicts.iter().all(|&v| v == Semantics::Unknown));
+        assert!(all_unknown(&verdicts));
 
         // Once the ped turns, bone-local offsets show it...
-        let turning = |t: u32| {
-            let rotation = Quat::from_rotation_z(0.02 * t as f32);
-            let root = axis_aligned()[0].translation;
-            axis_aligned()
-                .iter()
-                .map(|pose| Pose3::from_parts(root + rotation * (pose.translation - root), rotation))
-                .collect::<Vec<_>>()
-        };
+        let turning = |t: u32| turned(&axis_aligned(), Vec3::Z, 0.02 * t as f32);
         let mut local = Classifier::new(&parents());
         let verdicts = classify(&mut local, (0..WINDOW_FRAMES).map(|t| bone_local(&turning(t))));
         assert_eq!(verdicts.last(), Some(&Semantics::BoneLocal));
@@ -427,8 +459,105 @@ mod tests {
     }
 
     #[test]
+    fn noise_a_short_link_or_a_moving_pelvis_do_not_decide_a_still_pose() {
+        // HEAD 1 mm from NECK: noise swings that link's direction widely.
+        let mut world = axis_aligned();
+        let (neck, head) = (body_bone_index("NECK").unwrap(), body_bone_index("HEAD").unwrap());
+        world[head].translation = world[neck].translation + Vec3::new(0.0, 1.0e-3, 0.0);
+        let mut classifier = Classifier::new(&parents());
+        let verdicts = classify(
+            &mut classifier,
+            (0..5 * WINDOW_FRAMES).map(|t| jittered(bone_local(&world), t, NOISE)),
+        );
+        assert!(all_unknown(&verdicts), "noise is neither a turn nor a change of pose");
+
+        // The pelvis and everything on it bob against the root without turning.
+        let bobbing = |t: u32| {
+            let mut world = axis_aligned();
+            let lift = Vec3::new(0.0, 0.0, 0.1 * (0.3 * t as f32).sin());
+            for pose in &mut world[1..] {
+                pose.translation += lift;
+            }
+            bone_local(&world)
+        };
+        let mut classifier = Classifier::new(&parents());
+        let verdicts = classify(&mut classifier, (0..5 * WINDOW_FRAMES).map(bobbing));
+        assert!(all_unknown(&verdicts), "a pelvis moving against the root shows no turn");
+    }
+
+    #[test]
+    fn small_turns_are_not_read_as_world_offsets() {
+        // The whole body rocks by 0.08 rad either way: a turn of every bone
+        // above ROTATED_ANGLE that moves the links by more than
+        // POSE_CHANGE_ANGLE, yet shifts the sampled offsets by under 0.01.
+        // About x the x offsets stay put, about y the y offsets do.
+        let still = axis_aligned_with_links(Vec3::splat(0.1));
+        for axis in [Vec3::X, Vec3::Y] {
+            let mut classifier = Classifier::new(&parents());
+            let verdicts = classify(
+                &mut classifier,
+                (0..WINDOW_FRAMES).map(|t| bone_local(&turned(&still, axis, 0.08 * (0.2 * t as f32).cos()))),
+            );
+            assert_eq!(verdicts.last(), Some(&Semantics::BoneLocal), "rocking about {axis}");
+        }
+    }
+
+    #[test]
+    fn a_few_turned_bones_are_not_enough() {
+        for (turned_bones, expected) in [
+            (1, Semantics::Unknown),
+            (MIN_ROTATED_BONES - 1, Semantics::Unknown),
+            (MIN_ROTATED_BONES, Semantics::BoneLocal),
+        ] {
+            let mut world = axis_aligned();
+            let bones = world.len();
+            for pose in &mut world[bones - turned_bones..] {
+                pose.rotation = Quat::from_rotation_z(0.3);
+            }
+            let mut classifier = Classifier::new(&parents());
+            let verdicts = classify(&mut classifier, (0..2 * WINDOW_FRAMES).map(|_| bone_local(&world)));
+            assert_eq!(verdicts.last(), Some(&expected), "{turned_bones} bones turned");
+        }
+    }
+
+    #[test]
+    fn each_window_starts_afresh() {
+        let head = body_bone_index("HEAD").unwrap();
+        // Bone-local frames of a moving body with one bad frame: the window
+        // saw turns, a changing pose and offsets that are not world-like, yet
+        // decides nothing.
+        let spoilt = |t: u32| {
+            let mut samples = bone_local(&animated(t, 0.01));
+            if t == 3 {
+                samples[head].at_y.z = f32::NAN;
+            }
+            samples
+        };
+        // None of it carries over into a still window...
+        let still = bone_local(&axis_aligned());
+        let mut classifier = Classifier::new(&parents());
+        let verdicts = classify(
+            &mut classifier,
+            (0..WINDOW_FRAMES)
+                .map(spoilt)
+                .chain((0..WINDOW_FRAMES).map(|_| still.clone())),
+        );
+        assert!(all_unknown(&verdicts));
+        // ...or into a window of world offsets.
+        let mut classifier = Classifier::new(&parents());
+        let verdicts = classify(
+            &mut classifier,
+            (0..WINDOW_FRAMES)
+                .map(spoilt)
+                .chain((0..WINDOW_FRAMES).map(|t| world_axes(&animated(t, 0.01)))),
+        );
+        assert_eq!(verdicts[WINDOW_FRAMES as usize - 1], Semantics::Unknown);
+        assert_eq!(verdicts.last(), Some(&Semantics::World));
+    }
+
+    #[test]
     fn degenerate_bones_keep_the_verdict_unknown() {
-        let head = BODY_BONES.iter().position(|bone| bone.name == "HEAD").unwrap();
+        let head = body_bone_index("HEAD").unwrap();
         let mut classifier = Classifier::new(&parents());
         let frames = (0..5 * WINDOW_FRAMES).map(|t| {
             let mut samples = bone_local(&animated(t, 0.01));
@@ -437,11 +566,7 @@ mod tests {
             samples[head].at_y = origin;
             samples
         });
-        assert!(
-            classify(&mut classifier, frames)
-                .iter()
-                .all(|&v| v == Semantics::Unknown)
-        );
+        assert!(all_unknown(&classify(&mut classifier, frames)));
 
         // A window with a non-finite frame decides nothing either; the next one does.
         let mut classifier = Classifier::new(&parents());
