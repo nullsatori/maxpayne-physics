@@ -20,8 +20,11 @@ const DETAILED_CALLS: u32 = 16;
 const DETAILED_OBJECTS: u32 = 64;
 
 /// `void P_VirtualObject::setBoneMatrices(const std::rv<const M_Matrix4x3Template<float>*>&)`,
-/// as the mangled name spells it: public, non-virtual, `__thiscall`.
-type SetBoneMatrices = unsafe extern "thiscall" fn(this: *mut c_void, matrices: *const c_void);
+/// as the mangled name spells it: public, non-virtual, `__thiscall`. The
+/// `-unwind` variant has the same calling convention; it lets a C++ exception
+/// from the engine pass through the hook to the game's handler, which a plain
+/// `"thiscall"` declaration makes undefined behavior.
+type SetBoneMatrices = unsafe extern "thiscall-unwind" fn(this: *mut c_void, matrices: *const c_void);
 
 static ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 pub static STATS: HookStats = HookStats::new();
@@ -93,7 +96,7 @@ pub fn install(exe_imports: &[Import]) -> bool {
     true
 }
 
-unsafe extern "thiscall" fn set_bone_matrices(this: *mut c_void, matrices: *const c_void) {
+unsafe extern "thiscall-unwind" fn set_bone_matrices(this: *mut c_void, matrices: *const c_void) {
     // SAFETY: ORIGINAL holds the function the slot pointed to; it was stored
     // before the hook became reachable.
     unsafe {
