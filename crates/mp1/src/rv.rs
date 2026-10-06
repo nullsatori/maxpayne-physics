@@ -161,11 +161,12 @@ mod tests {
     }
 
     /// A container at 0x1000 laid out as `[begin, end)` over three matrix
-    /// pointers at 0x2000; the third pointer leads to unmapped memory.
+    /// pointers at 0x2000; the third pointer leads to unmapped memory. A
+    /// readable fourth pointer lies past `end`, where no element may be read.
     fn begin_end_memory() -> Memory {
         Memory(vec![
             (0x1000, words_bytes(&[0x2000, 0x200C, 0x200C, 0])),
-            (0x2000, words_bytes(&[0x3000, 0x3100, 0x9000])),
+            (0x2000, words_bytes(&[0x3000, 0x3100, 0x9000, 0x3000])),
             (0x3000, matrix_bytes(1.0)),
             (0x3100, matrix_bytes(100.0)),
         ])
@@ -244,11 +245,17 @@ mod tests {
         ] {
             assert_eq!(data_count(&words), None, "{words:x?}");
         }
+        assert_eq!(data_count(&[0x2000, MAX_COUNT, 0, 0]).map(|a| a.count), Some(MAX_COUNT));
     }
 
     #[test]
     fn array_slots_past_the_address_space_are_unreadable() {
-        let memory = Memory(vec![(0xFFFF_FFF0, words_bytes(&[0x3000; 4]))]);
+        // Address 0 is readable here, so a slot address that wrapped around
+        // to it would be read instead of rejected.
+        let memory = Memory(vec![
+            (0xFFFF_FFF0, words_bytes(&[0x3000; 4])),
+            (0, words_bytes(&[0x3100])),
+        ]);
         let read = |addr, buf: &mut [u8]| memory.read(addr, buf);
         let array = Array {
             data: 0xFFFF_FFFC,

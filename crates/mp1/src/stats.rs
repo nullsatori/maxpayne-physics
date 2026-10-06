@@ -244,11 +244,22 @@ mod tests {
         );
 
         // A known object counts once in the new window and is no new sighting.
-        let call = stats.record(0x5000, Some(&BEGIN_END_3));
+        // The count lies inside the previous window's range, so the range
+        // must have been reset to show it alone.
+        let begin_end_8 = [0x2000, 0x2020, 0, 0];
+        let call = stats.record(0x5000, Some(&begin_end_8));
         assert_eq!((call.number, call.first_sighting), (4, None));
-        stats.record(0x5000, Some(&BEGIN_END_3));
+        stats.record(0x5000, Some(&begin_end_8));
         let window = stats.take_window();
         assert_eq!((window.calls, window.objects, window.total_objects), (2, 1, 2));
+        assert_eq!(
+            window.begin_end,
+            Some(Range {
+                min: 8,
+                max: 8,
+                calls: 2
+            })
+        );
         assert_eq!(window.data_count, None);
 
         assert_eq!(
@@ -268,6 +279,8 @@ mod tests {
     #[test]
     fn objects_beyond_the_table_are_untracked() {
         let stats = HookStats::new();
+        // A null `this` would match a free slot; it must not take one.
+        assert_eq!(stats.record(0, None).first_sighting, None);
         // Page-aligned pointers, like objects of a common size, collide in the
         // low bits; every one of them must still find a slot.
         for i in 0..TRACKED {
@@ -275,7 +288,6 @@ mod tests {
             assert_eq!(call.first_sighting, Some(i as u32));
         }
         assert_eq!(stats.record(0x0FFF_0000, None).first_sighting, None);
-        assert_eq!(stats.record(0, None).first_sighting, None);
         // Known objects are still found in a full table.
         assert_eq!(stats.record(0x1000_0000 + 0x1000 * 100, None).first_sighting, None);
         let window = stats.take_window();
@@ -283,6 +295,8 @@ mod tests {
             (window.objects, window.total_objects, window.untracked),
             (TRACKED as u32, TRACKED as u32, 2)
         );
+        stats.record(0x0FFF_0000, None);
+        assert_eq!(stats.take_window().untracked, 1);
     }
 
     #[test]
