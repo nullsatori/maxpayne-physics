@@ -1,0 +1,5 @@
+# A dynamically linked C runtime would make the .asi files import
+# VCRUNTIME140.dll from the Visual C++ 2015+ x86 redistributable, which the
+# player's machine need not have; without it the ASI loader cannot load them.
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
